@@ -1,0 +1,18 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"freertos.h": "c",
+			"esp_log.h": "c",
+			"task.h": "c",
+			"gpio.h": "c",
+			"esp_rom_gpio.h": "c",
+			"ir_tools.h": "c",
+			"rmt.h": "c"
+		}
+	}
+}
