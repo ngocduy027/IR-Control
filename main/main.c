@@ -1,5 +1,6 @@
 #include <driver/gpio.h>
 #include <driver/rmt.h>
+#include <DHT.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -7,8 +8,10 @@
 #define IR_TX_GPIO GPIO_NUM_4
 #define IR_RX_GPIO GPIO_NUM_14
 
-uint32_t ac_on_code = 0xAC_ON_CODE;
-uint32_t ac_off_code = 0xAC_OFF_CODE;
+setDHTgpio(5);
+
+uint32_t ac_on_code = 0x000000;
+uint32_t ac_off_code = 0x000001;
 
 bool ac_is_on = false;
 
@@ -27,11 +30,11 @@ void app_main() {
 
   while (true) {
     size_t rx_size = 0;
-    rmt_item32_t* rx_items = rmt_get_ringbuf_item(rmt_tx_channel, &rx_size);
+    rmt_item32_t* rx_items = rmt_get_ringbuf_handle(rmt_tx_channel, &rx_size);
 
     if (rx_size > 0) {
       uint32_t received_code = nec_decode(rx_items, rx_size);
-      ESP_LOGI("AC", "IR code received: 0x%08x", received_code);
+      ESP_LOGI("AC", "IR code received: 0x%08lx", received_code);
 
       // Handle received code
       if (received_code == ac_on_code) {
@@ -46,6 +49,19 @@ void app_main() {
     }
 
     vTaskDelay(5000 / portTICK_PERIOD_MS);
+
+    getTemperature();
+
+    // Control logic:
+    if (temperature > 25 && !ac_is_on) {  // Adjust set temperature as needed
+      send_ir_code(ac_on_code);
+      ac_is_on = true;
+    } else if (temperature <= 23 && ac_is_on) {
+      send_ir_code(ac_off_code);
+      ac_is_on = false;
+    }
+
+    vTaskDelay(10000 / portTICK_PERIOD_MS);  // Check temperature every 10 seconds
   }
 }
 
@@ -54,5 +70,5 @@ void send_ir_code(uint32_t code) {
   int item_count = nec_encode(code, items);
   rmt_write_items(rmt_tx_channel, items, item_count, false);
   rmt_wait_tx_done(rmt_tx_channel, portMAX_DELAY);
-  ESP_LOGI("AC", "IR code sent: 0x%08x", code);
+  ESP_LOGI("AC", "IR code sent: 0x%08lx", code);
 }
