@@ -8,7 +8,7 @@
 #define IR_TX_GPIO GPIO_NUM_4
 #define IR_RX_GPIO GPIO_NUM_14
 
-setDHTgpio(5);
+setDHTgpio(GPIO_NUM_5);
 
 uint32_t ac_on_code = 0x000000;
 uint32_t ac_off_code = 0x000001;
