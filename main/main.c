@@ -1,74 +1,137 @@
-#include <driver/gpio.h>
 #include <driver/rmt.h>
-#include <DHT.h>
+#include <driver/gpio.h>
 #include <esp_log.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 
-#define IR_TX_GPIO GPIO_NUM_4
-#define IR_RX_GPIO GPIO_NUM_14
+#include "components\dht\dht.h"
 
-setDHTgpio(GPIO_NUM_5);
+#define IR_TX_PIN GPIO_NUM_4  
+#define IR_RX_PIN GPIO_NUM_5  
 
-uint32_t ac_on_code = 0x000000;
-uint32_t ac_off_code = 0x000001;
+dht_sensor_type_t sensor_type = DHT_TYPE_DHT11;  
+gpio_num_t dht_pin = GPIO_NUM_6;  
 
-bool ac_is_on = false;
+rmt_channel_t tx_channel;
+rmt_channel_t rx_channel;
 
-rmt_channel_t rmt_tx_channel = RMT_CHANNEL_0;
+// Example signal data
+uint32_t ac_on_signal[] = {9000, 4500, 4500, 560, 560, 4500, 560, 4500, 4500, 560, 560, 4500, 560, 4500, 560, 4500, 4500, 560, 4500, 560, 560, 4500, 4500, 560, 560, 4500, 560, 4500, 560};   //0x1234
+uint32_t ac_off_signal[] = {9000, 4500, 4500, 560, 560, 4500, 560, 4500, 560, 560, 4500, 4500, 560, 4500, 560, 560, 4500, 4500, 560, 4500, 560, 4500, 4500, 560, 560, 4500, 560, 4500, 4500, 560, 560};   //0x4321
 
-void app_main() {
-  // Initialize RMT transmitter and receiver
-  rmt_config_t rmt_tx_config = RMT_DEFAULT_CONFIG_TX(IR_TX_GPIO, rmt_tx_channel);
-  rmt_config(&rmt_tx_config);
-  rmt_driver_install(rmt_tx_channel, 0, 0);  // Set 0-length RX buffer for transmitter only
-
-  // Print initial state to the console
-  ESP_LOGI("AC", "AC is OFF");
-
-  rmt_rx_start(rmt_tx_channel, true);  // Start receiving IR signals
-
-  while (true) {
-    size_t rx_size = 0;
-    rmt_item32_t* rx_items = rmt_get_ringbuf_handle(rmt_tx_channel, &rx_size);
-
-    if (rx_size > 0) {
-      uint32_t received_code = nec_decode(rx_items, rx_size);
-      ESP_LOGI("AC", "IR code received: 0x%08lx", received_code);
-
-      // Handle received code
-      if (received_code == ac_on_code) {
-        ac_is_on = true;
-        ESP_LOGI("AC", "AC turned ON");
-      } else if (received_code == ac_off_code) {
-        ac_is_on = false;
-        ESP_LOGI("AC", "AC turned OFF");
-      } else {
-        ESP_LOGI("AC", "Unknown IR code received");
-      }
+void send_signal(uint32_t signal[], size_t length) {
+    esp_err_t err = rmt_transmit(tx_channel, NULL, signal, length, NULL);
+    if (err != ESP_OK) {
+        ESP_LOGE("send_signal", "Failed to transmit signal: %s", esp_err_to_name(err));
     }
-
-    vTaskDelay(5000 / portTICK_PERIOD_MS);
-
-    getTemperature();
-
-    // Control logic:
-    if (temperature > 25 && !ac_is_on) {  // Adjust set temperature as needed
-      send_ir_code(ac_on_code);
-      ac_is_on = true;
-    } else if (temperature <= 23 && ac_is_on) {
-      send_ir_code(ac_off_code);
-      ac_is_on = false;
-    }
-
-    vTaskDelay(10000 / portTICK_PERIOD_MS);  // Check temperature every 10 seconds
-  }
 }
 
-void send_ir_code(uint32_t code) {
-  rmt_item32_t items[32];  // Maximum NEC code length
-  int item_count = nec_encode(code, items);
-  rmt_write_items(rmt_tx_channel, items, item_count, false);
-  rmt_wait_tx_done(rmt_tx_channel, portMAX_DELAY);
-  ESP_LOGI("AC", "IR code sent: 0x%08lx", code);
+void rx_task(void *arg) {
+    while (1) {
+        esp_err_t err = rmt_rx_start(rx_channel, true);
+        if (err != ESP_OK) {
+            ESP_LOGE("rx_task", "Failed to receive signal: %s", esp_err_to_name(err));
+        } else {
+            size_t length = 0;
+            // Access received data
+            rmt_item32_t *items = rmt_get_items(rx_channel, &length);
+            // Process received signal data
+
+            //Print raw data for analysis
+            for (int i = 0; i < length; i++) {
+                printf("%u ", items[i].duration0);
+            }
+            printf("\n");
+        }
+        rmt_rx_stop(rx_channel);
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
 }
+
+void app_main(void) {
+    rmt_config_t tx_config = {
+        .channel = RMT_CHANNEL_0,  
+        .gpio_num = IR_TX_PIN,
+        .mem_block_num = 1,
+        .clk_div = 80,  
+        .rmt_mode = RMT_MODE_TX,
+        .tx_config = {
+            .carrier_freq_hz = 38000,
+            .carrier_duty_percent = 50,
+            .carrier_level = 1,
+            .carrier_en = 1,
+            .idle_level = 0,
+            .idle_output_en = 1,
+        },
+    };
+
+    rmt_config_t rx_config = {
+        .channel = RMT_CHANNEL_1, 
+        .gpio_num = IR_RX_PIN,
+        .mem_block_num = 1,
+        .clk_div = 80,
+        .rmt_mode = RMT_MODE_RX,
+        .rx_config = {
+            .filter_en = true,
+            .filter_ticks_thresh = 100, 
+            .idle_threshold = 10000,  
+        },
+    };
+
+    esp_err_t err = rmt_config(&tx_config);
+    if (err != ESP_OK) {
+        ESP_LOGE("app_main", "Failed to configure TX RMT: %s", esp_err_to_name(err));
+        return;  // Handle error, e.g., halt execution, indicate failure
+    }
+
+    err = rmt_config(&rx_config);
+    if (err != ESP_OK) {
+        ESP_LOGE("app_main", "Failed to configure RX RMT: %s", esp_err_to_name(err));
+        return;  // Handle error, e.g., halt execution, indicate failure
+    }
+
+    err = rmt_driver_install(tx_config.channel, 0, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE("app_main", "Failed to install RMT driver: %s", esp_err_to_name(err));
+        return;  // Handle error
+    }
+
+    err = rmt_driver_install(rx_config.channel, 0, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE("app_main", "Failed to install RMT driver: %s", esp_err_to_name(err));
+        return;  // Handle error
+    }
+
+    // Get RMT channel handles
+    err = rmt_get_channel_handle(tx_config.channel, &tx_channel);
+    if (err != ESP_OK) {
+        ESP_LOGE("app_main", "Failed to get TX channel handle: %s", esp_err_to_name(err));
+        return;  // Handle error
+    }
+
+    err = rmt_get_channel_handle(rx_config.channel, &rx_channel);
+    if (err != ESP_OK) {
+        ESP_LOGE("app_main", "Failed to get RX channel handle: %s", esp_err_to_name(err));
+        return;  // Handle error
+    }
+    
+    int16_t humidity;
+    int16_t temperature;
+    esp_err_t err = dht_read_data(sensor_type, dht_pin, &humidity, &temperature);
+    if (err != ESP_OK) {
+        ESP_LOGE("app_main", "Failed to read DHT11 data: %s", esp_err_to_name(err));
+    } else {
+        float temp_celsius = temperature / 10.0f;  // Convert to Celsius
+        ESP_LOGI("app_main", "Temperature: %.1f°C", temp_celsius);
+
+        // Control AC based on temperature
+        if (temp_celsius > 25.0f) {  // Adjust threshold as needed
+            send_signal(ac_on_signal, sizeof(ac_on_signal) / sizeof(*ac_on_signal));
+        } else {
+            send_signal(ac_off_signal, sizeof(ac_off_signal) / sizeof(*ac_off_signal));
+        }
+    }
+
+
+    xTaskCreate(rx_task, "rx_task", 2048, NULL, 10, NULL);  // Start RX task
+}
+
+
