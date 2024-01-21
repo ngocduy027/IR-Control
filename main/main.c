@@ -42,7 +42,7 @@ void rx_task(void *arg) {
             printf("\n");
         }
         rmt_rx_stop(rx_channel);
-        vTaskDelay(10 / portTICK_PERIOD_MS);
+        //vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
 
